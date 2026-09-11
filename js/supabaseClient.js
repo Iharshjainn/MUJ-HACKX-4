@@ -129,8 +129,12 @@ class DataService {
     }
 
     async addTransaction(tx) {
-        const user = await this.getCurrentUser();
         if (!this.isDemoMode && this.client) {
+            const user = await this.getCurrentUser();
+            if (!user) {
+                if (window.app) window.app.openModal('auth-modal');
+                throw new Error("Please Sign In or Create an Account (click the 🔑 icon) to save records to Supabase.");
+            }
             const record = {
                 user_id: user.id,
                 title: tx.title,
@@ -195,8 +199,12 @@ class DataService {
     }
 
     async saveBudget(category, monthly_limit) {
-        const user = await this.getCurrentUser();
         if (!this.isDemoMode && this.client) {
+            const user = await this.getCurrentUser();
+            if (!user) {
+                if (window.app) window.app.openModal('auth-modal');
+                throw new Error("Please Sign In or Create an Account to manage budgets in Supabase.");
+            }
             const { data, error } = await this.client
                 .from('budgets')
                 .upsert([{ user_id: user.id, category, monthly_limit: parseFloat(monthly_limit) }], { onConflict: 'user_id, category' })
@@ -241,8 +249,12 @@ class DataService {
     }
 
     async addGoal(goal) {
-        const user = await this.getCurrentUser();
         if (!this.isDemoMode && this.client) {
+            const user = await this.getCurrentUser();
+            if (!user) {
+                if (window.app) window.app.openModal('auth-modal');
+                throw new Error("Please Sign In or Create an Account to save goals in Supabase.");
+            }
             const record = {
                 user_id: user.id,
                 title: goal.title,
