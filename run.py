@@ -34,7 +34,7 @@ def run_frontend():
 
 def main():
     print("=" * 60)
-    print("  🚀 Launching FinWise Financial Tracker & AI Advisor")
+    print("  [LAUNCHING] FinWise Financial Tracker & AI Advisor")
     print("=" * 60)
 
     # 1. Start backend process
