@@ -478,7 +478,7 @@ class App {
         this.openModal('settings-modal');
     }
 
-    handleSettingsSubmit(e) {
+    async handleSettingsSubmit(e) {
         e.preventDefault();
         const supabaseUrl = document.getElementById('setting-supabase-url').value;
         const supabaseAnonKey = document.getElementById('setting-supabase-key').value;
@@ -490,6 +490,24 @@ class App {
         this.showToast("Configuration saved successfully!", "success");
         this.closeModal('settings-modal');
         this.checkAuthStatus();
+        await this.loadAllData();
+    }
+
+    async testSupabaseConnection() {
+        const url = document.getElementById('setting-supabase-url').value.trim();
+        const key = document.getElementById('setting-supabase-key').value.trim();
+        if (!url || !key) {
+            this.showToast("Please enter Supabase URL and Key first.", "error");
+            return;
+        }
+        try {
+            const testClient = window.supabase.createClient(url, key);
+            const { error } = await testClient.from('transactions').select('id').limit(1);
+            if (error) throw error;
+            this.showToast("Connected to Supabase successfully!", "success");
+        } catch (err) {
+            this.showToast("Supabase connection check: " + err.message, "info");
+        }
     }
 
     async handleAuthSubmit(e) {
