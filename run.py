@@ -23,7 +23,7 @@ def run_backend():
 
 class CustomHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=FRONTEND_DIR, **kwargs)
+        super().__init__(*args, directory=PROJECT_ROOT, **kwargs)
     def log_message(self, format, *args):
         pass  # Quiet HTTP logging
 
