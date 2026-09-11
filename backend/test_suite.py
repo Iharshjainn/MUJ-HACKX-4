@@ -83,6 +83,10 @@ def test_api_endpoints():
     assert r_health.status_code == 200
     assert r_health.json()["status"] == "healthy"
 
+    r_cfg = client.get("/api/public-config")
+    assert r_cfg.status_code == 200
+    assert "supabase_url" in r_cfg.json()
+
     # 2. Simulate Endpoint
     payload = {
         "snapshot": {

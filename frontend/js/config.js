@@ -1,28 +1,28 @@
 /**
  * FinWise Global Configuration
  * 
- * You can set your Supabase credentials and Backend API URL here,
- * OR configure them dynamically in the App's "Settings" modal in the browser.
+ * Auto-detects environment (Local vs Vercel/Cloud), fetches public configs
+ * from the backend, and allows browser override in Settings.
  */
+
+const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 
 const CONFIG = {
     // Supabase Credentials
-    // Replace these or configure them in the in-app Settings dialog
-    SUPABASE_URL: localStorage.getItem('finwise_supabase_url') || 'https://your-project.supabase.co',
-    SUPABASE_ANON_KEY: localStorage.getItem('finwise_supabase_anon_key') || 'your-anon-key-here',
+    SUPABASE_URL: localStorage.getItem('finwise_supabase_url') || '',
+    SUPABASE_ANON_KEY: localStorage.getItem('finwise_supabase_anon_key') || '',
 
-    // Python FastAPI Backend API URL
-    // When running locally, typically http://127.0.0.1:8000
-    // When deployed (e.g. on Render/Railway), update this to your backend domain
-    BACKEND_URL: localStorage.getItem('finwise_backend_url') || 'http://127.0.0.1:8000',
+    // Backend API URL:
+    // If running on Vercel/Cloud on the same domain, use origin.
+    // If running on local static server (e.g. port 5500), default to http://127.0.0.1:8000
+    BACKEND_URL: localStorage.getItem('finwise_backend_url') || (isLocalhost ? 'http://127.0.0.1:8000' : window.location.origin),
 
-    // Optional user-supplied Gemini API key for AI Chatbot
+    // Optional user-supplied Gemini / OpenAI API key
     GEMINI_API_KEY: localStorage.getItem('finwise_gemini_key') || '',
 
-    // Currency symbol and format
+    // Currency symbol
     CURRENCY: '$',
 
-    // Checks if valid Supabase credentials have been configured
     isSupabaseConfigured() {
         return (
             this.SUPABASE_URL && 
@@ -30,6 +30,28 @@ const CONFIG = {
             !this.SUPABASE_URL.includes('your-project') &&
             !this.SUPABASE_ANON_KEY.includes('your-anon-key')
         );
+    },
+
+    /**
+     * Auto-fetches backend public configuration (Supabase URL & Anon Key from .env).
+     * This eliminates the need for manual copy-pasting in the browser!
+     */
+    async syncWithBackend() {
+        try {
+            const resp = await fetch(`${this.BACKEND_URL.replace(/\/$/, '')}/api/public-config`, {
+                headers: { 'Accept': 'application/json' }
+            });
+            if (resp.ok) {
+                const data = await resp.json();
+                if (data.supabase_url && data.supabase_anon_key && !this.SUPABASE_URL) {
+                    this.SUPABASE_URL = data.supabase_url;
+                    this.SUPABASE_ANON_KEY = data.supabase_anon_key;
+                    console.log("Auto-loaded Supabase credentials from backend .env.");
+                }
+            }
+        } catch (e) {
+            console.log("Backend offline or running in standalone mode:", e.message);
+        }
     },
 
     saveSettings({ supabaseUrl, supabaseAnonKey, backendUrl, geminiKey }) {

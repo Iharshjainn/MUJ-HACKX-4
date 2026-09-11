@@ -20,7 +20,7 @@ app = FastAPI(
 # CORS Middleware configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins for easy development and multi-domain deployment
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,6 +41,19 @@ def health_check():
         "status": "healthy",
         "gemini_configured": bool(settings.GEMINI_API_KEY),
         "supabase_configured": bool(settings.SUPABASE_URL and settings.SUPABASE_ANON_KEY)
+    }
+
+@app.get("/api/public-config")
+def get_public_config():
+    """
+    Returns public cloud configuration (Supabase URL & Anon Key)
+    so the frontend automatically links without manual configuration if set in .env.
+    """
+    return {
+        "supabase_url": settings.SUPABASE_URL,
+        "supabase_anon_key": settings.SUPABASE_ANON_KEY,
+        "ai_ready": bool(settings.GEMINI_API_KEY),
+        "project_name": settings.PROJECT_NAME
     }
 
 @app.post("/api/simulate", response_model=SimulationResult)

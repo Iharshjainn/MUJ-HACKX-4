@@ -8,6 +8,13 @@ class DataService {
         this.client = null;
         this.currentUser = null;
         this.isDemoMode = true;
+    }
+
+    async init() {
+        // Sync configuration from backend .env if available
+        if (window.CONFIG && window.CONFIG.syncWithBackend) {
+            await window.CONFIG.syncWithBackend();
+        }
         this.initClient();
     }
 
@@ -16,14 +23,22 @@ class DataService {
             try {
                 this.client = window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
                 this.isDemoMode = false;
-                console.log("Connected to Supabase Cloud.");
+                console.log("Connected to Supabase Cloud:", CONFIG.SUPABASE_URL);
+
+                // Listen for authentication changes
+                this.client.auth.onAuthStateChange((event, session) => {
+                    this.currentUser = session?.user || null;
+                    if (window.app) {
+                        window.app.checkAuthStatus();
+                    }
+                });
             } catch (err) {
-                console.warn("Supabase init failed, falling back to local demo mode:", err);
+                console.warn("Supabase init error, falling back to local demo mode:", err);
                 this.isDemoMode = true;
             }
         } else {
             this.isDemoMode = true;
-            console.log("Running in Local Demo Mode. Configure Supabase in Settings to sync to cloud.");
+            console.log("Running in Local Demo Mode. Configure Supabase in Settings or .env to sync with cloud.");
         }
     }
 
@@ -34,11 +49,11 @@ class DataService {
     async getCurrentUser() {
         if (!this.isDemoMode && this.client) {
             try {
-                const { data: { user } } = await this.client.auth.getUser();
-                this.currentUser = user;
-                return user;
+                const { data: { session } } = await this.client.auth.getSession();
+                this.currentUser = session?.user || null;
+                return this.currentUser;
             } catch (e) {
-                console.error("Error fetching user:", e);
+                console.error("Error fetching session:", e);
                 return null;
             }
         } else {
@@ -58,6 +73,7 @@ class DataService {
                 }
             });
             if (error) throw error;
+            this.currentUser = data.user;
             return data.user;
         } else {
             const demoUser = { id: 'demo-' + Date.now(), email, user_metadata: { full_name: fullName } };
@@ -256,7 +272,6 @@ class DataService {
 
     async updateGoalProgress(id, addAmount) {
         if (!this.isDemoMode && this.client) {
-            // Fetch current
             const { data, error: fetchErr } = await this.client.from('savings_goals').select('current_amount').eq('id', id).single();
             if (fetchErr) throw fetchErr;
             const updated = (data.current_amount || 0) + parseFloat(addAmount);
@@ -284,13 +299,12 @@ class DataService {
     }
 
     // ==========================================
-    // LOCAL STORAGE SEED & HELPERS
+    // LOCAL SEED DATA
     // ==========================================
 
     _getLocalTransactions() {
         const raw = localStorage.getItem('finwise_local_transactions');
         if (raw) return JSON.parse(raw);
-        // Default seed data for initial demonstration
         const seed = [
             { id: 'tx-1', title: 'Salary Direct Deposit', amount: 5200.00, type: 'income', category: 'Salary', date: '2026-09-01', notes: 'Monthly tech salary', is_recurring: true },
             { id: 'tx-2', title: 'Freelance Design Project', amount: 850.00, type: 'income', category: 'Freelance', date: '2026-09-05', notes: 'UI consulting gig', is_recurring: false },

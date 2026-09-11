@@ -14,6 +14,9 @@ class App {
 
     async init() {
         this.bindEvents();
+        if (window.DataService && window.DataService.init) {
+            await window.DataService.init();
+        }
         await this.loadAllData();
         this.checkAuthStatus();
     }

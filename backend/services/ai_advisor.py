@@ -29,8 +29,7 @@ When users ask 'What-if' questions (e.g. buying a new iPhone, going on a vacatio
 class AIAdvisorService:
     @staticmethod
     def _extract_scenario_from_text(text: str) -> Optional[WhatIfScenario]:
-        """Simple regex heuristic to detect purchase scenarios if not explicitly passed."""
-        # e.g., "buy an iphone for $1200" or "bought a laptop for 800" or "$1500 on vacation"
+        """Heuristic regex to detect purchase scenarios if not explicitly passed."""
         patterns = [
             r"(?:buy|purchase|spend|get)\s+(?:an?|the)?\s*([a-zA-Z0-9\s]{2,25}?)\s+(?:for|at|worth)\s*\$?([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{2})?)",
             r"\$?([0-9]+(?:,[0-9]{3})*(?:\.[0-9]{2})?)\s+(?:on|for)\s+(?:an?|the)?\s*([a-zA-Z0-9\s]{2,25})"
@@ -40,7 +39,6 @@ class AIAdvisorService:
             if match:
                 g1, g2 = match.groups()
                 try:
-                    # check which group is numeric
                     val_str = g2 if any(char.isdigit() for char in g2) else g1
                     name_str = g1 if val_str == g2 else g2
                     cost = float(val_str.replace(",", ""))
@@ -54,26 +52,28 @@ class AIAdvisorService:
     @classmethod
     async def process_chat(cls, request: ChatRequest) -> ChatResponse:
         snapshot = request.financial_snapshot or FinancialSnapshot()
-        
-        # If scenario wasn't explicitly passed, attempt heuristic extraction from message
         scenario = request.scenario or cls._extract_scenario_from_text(request.message)
         
         simulation: Optional[SimulationResult] = None
         if scenario:
             simulation = ScenarioEngine.simulate(snapshot, scenario)
 
-        # Determine Gemini API Key
+        # Check API key: either provided in request or configured in backend settings
         api_key = (request.api_key or "").strip() or settings.GEMINI_API_KEY.strip()
 
         if api_key:
             try:
-                reply = await cls._call_gemini_api(api_key, request, snapshot, simulation)
+                # Detect whether the key is OpenAI (starts with 'sk-') or Google Gemini
+                if api_key.startswith("sk-"):
+                    reply = await cls._call_openai_api(api_key, request, snapshot, simulation)
+                else:
+                    reply = await cls._call_gemini_api(api_key, request, snapshot, simulation)
             except Exception as e:
-                logger.error(f"Gemini API call failed: {e}")
+                logger.error(f"AI API call failed: {e}")
                 reply = cls._generate_fallback_response(request.message, snapshot, simulation)
-                reply += f"\n\n*(Note: Cloud AI connection encountered an issue: {str(e)[:120]}. Provided deterministic financial calculation above.)*"
+                reply += f"\n\n*(Note: Cloud AI connection encountered an issue: {str(e)[:140]}. Provided deterministic financial calculation above.)*"
         else:
-            # Smart deterministic offline financial advisor
+            # Deterministic calculation and advice
             reply = cls._generate_fallback_response(request.message, snapshot, simulation)
 
         suggestions = [
@@ -90,14 +90,7 @@ class AIAdvisorService:
         )
 
     @classmethod
-    async def _call_gemini_api(
-        cls, 
-        api_key: str, 
-        request: ChatRequest, 
-        snapshot: FinancialSnapshot, 
-        simulation: Optional[SimulationResult]
-    ) -> str:
-        # Build prompt with financial context
+    def _build_context_prompt(cls, snapshot: FinancialSnapshot, simulation: Optional[SimulationResult]) -> str:
         context_parts = [
             "=== USER FINANCIAL SNAPSHOT ===",
             f"- Currency: {snapshot.currency}",
@@ -109,7 +102,7 @@ class AIAdvisorService:
 
         if snapshot.category_breakdown:
             breakdown_str = ", ".join([f"{k}: ${v:,.2f}" for k, v in snapshot.category_breakdown.items()])
-            context_parts.append(f"- Expense Breakdown by Category: {breakdown_str}")
+            context_parts.append(f"- Expense Breakdown: {breakdown_str}")
 
         if snapshot.budgets:
             budgets_str = ", ".join([f"{b.category}: Limit ${b.monthly_limit:,.2f}" for b in snapshot.budgets])
@@ -135,56 +128,84 @@ class AIAdvisorService:
                 context_parts.append(f"- Goals Impact: {delays}")
             context_parts.append(f"- Mathematical Summary: {simulation.mathematical_verdict}")
 
-        context_prompt = "\n".join(context_parts)
+        return "\n".join(context_parts)
 
-        # Prepare messages for Gemini REST API
-        contents = []
-        
-        # System instructions
+    @classmethod
+    async def _call_gemini_api(
+        cls, 
+        api_key: str, 
+        request: ChatRequest, 
+        snapshot: FinancialSnapshot, 
+        simulation: Optional[SimulationResult]
+    ) -> str:
+        context_prompt = cls._build_context_prompt(snapshot, simulation)
         full_system = f"{SYSTEM_PROMPT}\n\n{context_prompt}"
 
-        # History
+        contents = []
         for msg in (request.history or []):
             role = "user" if msg.role == "user" else "model"
-            contents.append({
-                "role": role,
-                "parts": [{"text": msg.content}]
-            })
+            contents.append({"role": role, "parts": [{"text": msg.content}]})
 
-        # Latest message
-        contents.append({
-            "role": "user",
-            "parts": [{"text": f"User question: {request.message}"}]
-        })
+        contents.append({"role": "user", "parts": [{"text": f"User question: {request.message}"}]})
 
-        # Using Gemini 1.5 Flash endpoint
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-        payload = {
-            "system_instruction": {
-                "parts": [{"text": full_system}]
-            },
-            "contents": contents,
-            "generationConfig": {
-                "temperature": 0.3,
-                "maxOutputTokens": 1000
-            }
-        }
+        # Try gemini-1.5-flash with fallback to gemini-2.0-flash or gemini-1.5-pro
+        models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
+        last_err = None
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, json=payload)
+            for model_name in models:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                payload = {
+                    "system_instruction": {"parts": [{"text": full_system}]},
+                    "contents": contents,
+                    "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1200}
+                }
+                resp = await client.post(url, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates and "content" in candidates[0]:
+                        parts = candidates[0]["content"].get("parts", [])
+                        if parts and "text" in parts[0]:
+                            return parts[0]["text"]
+                else:
+                    last_err = f"Model {model_name} error ({resp.status_code}): {resp.text[:100]}"
+                    continue
+
+        raise Exception(last_err or "Gemini generation failed")
+
+    @classmethod
+    async def _call_openai_api(
+        cls,
+        api_key: str,
+        request: ChatRequest,
+        snapshot: FinancialSnapshot,
+        simulation: Optional[SimulationResult]
+    ) -> str:
+        context_prompt = cls._build_context_prompt(snapshot, simulation)
+        messages = [
+            {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{context_prompt}"}
+        ]
+        for msg in (request.history or []):
+            messages.append({"role": msg.role, "content": msg.content})
+
+        messages.append({"role": "user", "content": request.message})
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": messages,
+                    "temperature": 0.3,
+                    "max_tokens": 1000
+                }
+            )
             if resp.status_code != 200:
-                # Try fallback model or error
-                error_detail = resp.text
-                logger.warning(f"Gemini API returned status {resp.status_code}: {error_detail}")
-                raise Exception(f"Gemini API error ({resp.status_code}): {resp.json().get('error', {}).get('message', 'Unknown')}")
-            
+                raise Exception(f"OpenAI error ({resp.status_code}): {resp.text[:120]}")
             data = resp.json()
-            candidates = data.get("candidates", [])
-            if candidates and "content" in candidates[0]:
-                parts = candidates[0]["content"].get("parts", [])
-                if parts and "text" in parts[0]:
-                    return parts[0]["text"]
-            return "I analyzed your financial data, but could not generate a response. Please try again."
+            return data["choices"][0]["message"]["content"]
 
     @classmethod
     def _generate_fallback_response(
@@ -193,7 +214,6 @@ class AIAdvisorService:
         snapshot: FinancialSnapshot, 
         simulation: Optional[SimulationResult]
     ) -> str:
-        """Smart deterministic financial advisor response when no external API key is configured."""
         if simulation:
             score = simulation.affordability_score
             verdict_badge = "🟢 Safe to Buy" if score >= 75 else ("🟡 Proceed with Caution" if score >= 50 else "🔴 Not Recommended")
@@ -219,19 +239,18 @@ class AIAdvisorService:
 
             response_lines.append("**Advisor Recommendations:**")
             if score >= 75:
-                response_lines.append("1. **Go for it!** Your cash flow comfortably absorbs this purchase without threatening your monthly obligations.")
-                response_lines.append("2. Ensure you do not dip into your core emergency reserves.")
+                response_lines.append("1. **Affordable:** Your cash flow comfortably absorbs this purchase without threatening your monthly obligations.")
+                response_lines.append("2. Maintain your core emergency fund untouched.")
             elif score >= 50:
-                response_lines.append(f"1. **Postpone or Save:** Delay the purchase by 1-2 months to pay out of designated surplus rather than halting your savings goals.")
+                response_lines.append("1. **Consider Timing:** Postpone the purchase by 1-2 months to accumulate dedicated surplus rather than slowing down existing savings goals.")
                 response_lines.append("2. **Explore 0% Installments:** Spreading the expense over 6-12 months can keep your monthly cash flow positive.")
-                response_lines.append("3. **Offset with Budget Trimming:** Temporarily cut dining out or discretionary spending by 20% during this period.")
+                response_lines.append("3. **Budget Trimming:** Temporarily reduce discretionary dining out or entertainment expenses.")
             else:
-                response_lines.append("1. **Hold Off:** This purchase significantly stresses your cashflow or turns your monthly balance negative.")
-                response_lines.append("2. **Build a Sinking Fund:** Set up a dedicated mini-goal in FinWise and save for this item over 3-6 months first.")
+                response_lines.append("1. **Hold Off:** This purchase will put significant stress on your monthly cash flow or push you into a deficit.")
+                response_lines.append("2. **Create a Dedicated Sinking Fund:** Set up a mini-goal in FinWise and save gradually over 3-6 months first.")
 
             return "\n".join(response_lines)
         
-        # General question fallback
         income = snapshot.monthly_income
         expenses = snapshot.total_expenses
         net = snapshot.net_savings
@@ -247,5 +266,5 @@ class AIAdvisorService:
             f"- *'If I buy an iPhone 16 for $1,199, how does it affect my goals?'*\n"
             f"- *'Can I afford a $2,500 vacation next month?'*\n"
             f"- *'How will financing a $400/mo car affect my savings?'*\n\n"
-            f"*(Add your Google Gemini API key in Settings or .env to enable full conversational AI!)*"
+            f"*(Add your Google Gemini or OpenAI API key in Settings or .env for conversational AI reasoning!)*"
         )
